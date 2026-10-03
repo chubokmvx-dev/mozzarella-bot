@@ -2,3 +2,4 @@ aiogram>=3.4,<4
 anthropic>=0.40
 asyncpg>=0.29
 python-dotenv>=1.0
+Pillow>=10.0
