@@ -23,6 +23,9 @@ async def init(dsn: str) -> None:
         "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
     )
     await pool.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS image BYTEA")
+    await pool.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS video BYTEA")
+    await pool.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS ig_media_id TEXT")
+    await pool.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ")
 
 
 async def add_post_with_image(fmt: str, text: str, image: bytes) -> int:
@@ -68,7 +71,11 @@ async def add_post(fmt: str, slot: str, text: str, photo_idea: str) -> int:
 
 
 async def get_post(post_id: int) -> dict | None:
-    row = await pool.fetchrow("SELECT * FROM posts WHERE id=$1", post_id)
+    row = await pool.fetchrow(
+        "SELECT id, format, slot, text, photo_idea, status, created_at, ig_media_id, published_at "
+        "FROM posts WHERE id=$1",
+        post_id,
+    )
     return dict(row) if row else None
 
 
@@ -79,21 +86,28 @@ async def set_text(post_id: int, text: str) -> None:
 async def set_status(post_id: int, status: str) -> None:
     await pool.execute("UPDATE posts SET status=$2 WHERE id=$1", post_id, status)
 
-async def add_post(fmt: str, slot: str, text: str, photo_idea: str) -> int:
-    return await pool.fetchval(
-        "INSERT INTO posts (format, slot, text, photo_idea) VALUES ($1,$2,$3,$4) RETURNING id",
-        fmt, slot, text, photo_idea,
+
+async def set_video(post_id: int, video: bytes) -> None:
+    await pool.execute("UPDATE posts SET video=$2 WHERE id=$1", post_id, video)
+
+
+async def get_video(post_id: int) -> bytes | None:
+    return await pool.fetchval("SELECT video FROM posts WHERE id=$1", post_id)
+
+
+async def set_format(post_id: int, fmt: str) -> None:
+    await pool.execute("UPDATE posts SET format=$2 WHERE id=$1", post_id, fmt)
+
+
+async def set_published(post_id: int, media_id: str) -> None:
+    await pool.execute(
+        "UPDATE posts SET status='published', ig_media_id=$2, published_at=now() WHERE id=$1",
+        post_id, media_id,
     )
 
 
-async def get_post(post_id: int) -> dict | None:
-    row = await pool.fetchrow("SELECT * FROM posts WHERE id=$1", post_id)
-    return dict(row) if row else None
-
-
-async def set_text(post_id: int, text: str) -> None:
-    await pool.execute("UPDATE posts SET text=$2 WHERE id=$1", post_id, text)
-
-
-async def set_status(post_id: int, status: str) -> None:
-    await pool.execute("UPDATE posts SET status=$2 WHERE id=$1", post_id, status)
+async def recent_published_formats(limit: int = 5) -> list[str]:
+    rows = await pool.fetch(
+        "SELECT format FROM posts WHERE status='published' ORDER BY published_at DESC LIMIT $1", limit
+    )
+    return [r["format"] for r in rows]
