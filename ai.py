@@ -97,3 +97,36 @@ async def post_from_photo(photo_jpeg: bytes, hint: str = "", existing: str = "")
         ],
     )
     return _text(msg).strip()
+
+
+async def choose_format(photo_jpeg: bytes, hint: str, recent: list[str]) -> dict:
+    """Claude вирішує, чим краще публікувати це фото: звичайним постом чи Reels."""
+    b64 = base64.b64encode(photo_jpeg).decode()
+    task = (
+        "Обери формат публікації для цього фото в Instagram: \"photo\" або \"reel\".\n"
+        "Орієнтири: Reels зазвичай дають більше охоплення нових людей, тож добре для апетитних "
+        "красивих кадрів і новинок. Звичайне фото краще, коли на картинці багато тексту, цін чи умов акції, "
+        "які треба встигнути прочитати.\n"
+        f"Останні опубліковані формати (від нових до старих): {', '.join(recent) or 'ще немає'}. "
+        "Не став reel більше двох разів поспіль, чергуй для різноманіття.\n"
+        f"Дані про товар: {hint or 'немає'}\n\n"
+        'Поверни ТІЛЬКИ JSON: {"format": "photo" | "reel", "reason": "одне речення українською"}'
+    )
+    msg = await client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=300,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+                    {"type": "text", "text": task},
+                ],
+            }
+        ],
+    )
+    raw = _text(msg)
+    start, end = raw.find("{"), raw.rfind("}")
+    data = json.loads(raw[start : end + 1])
+    fmt = "reel" if data.get("format") == "reel" else "photo"
+    return {"format": fmt, "reason": str(data.get("reason", ""))}
