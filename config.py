@@ -8,3 +8,9 @@ ADMIN_ID = int(os.environ["ADMIN_ID"])
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
+
+# Instagram / Meta (необов'язкові, поки не підключено публікацію)
+META_APP_ID = os.getenv("META_APP_ID", "")
+META_APP_SECRET = os.getenv("META_APP_SECRET", "")
+META_USER_TOKEN = os.getenv("META_USER_TOKEN", "")  # короткий токен лише для першого підключення
+GRAPH_VERSION = os.getenv("GRAPH_VERSION", "v23.0")

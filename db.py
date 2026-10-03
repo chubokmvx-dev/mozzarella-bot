@@ -19,6 +19,21 @@ async def init(dsn: str) -> None:
         )
         """
     )
+    await pool.execute(
+        "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+
+
+async def get_setting(key: str) -> str | None:
+    return await pool.fetchval("SELECT value FROM settings WHERE key=$1", key)
+
+
+async def set_setting(key: str, value: str) -> None:
+    await pool.execute(
+        "INSERT INTO settings (key, value) VALUES ($1,$2) "
+        "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
+        key, value,
+    )
 
 
 async def add_post(fmt: str, slot: str, text: str, photo_idea: str) -> int:
