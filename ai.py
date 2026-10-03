@@ -6,7 +6,11 @@ from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 BRAND = """Ти SMM-менеджер Instagram-магазину «mozzarella».
-Магазин продає італійські продукти (моцарела та інші), які привозять напряму з-за кордону.
+Магазин продає європейські продукти, які привозять напряму з-за кордону. Це не лише Італія: є й інші країни.
+Країну походження товару визнач за фото (упаковка, етикетка, прапор, назва, мова написів) або за даними від власника.
+Якщо країну можна визначити впевнено, пиши саме її. Якщо не впевнений, не вгадуй і не згадуй конкретну країну, пиши загально: «смак Європи».
+Не став Італію за замовчуванням.
+Коли доречна фраза про доставку, використовуй формулу: «Ми привозимо європейські продукти напряму з-за кордону, щоб смак <країни походження> був у вас вдома.» (наприклад: «щоб смак Іспанії був у вас вдома», «щоб смак Франції був у вас вдома»).
 Мова: українська. Тон: теплий, апетитний, без пафосу й канцеляриту.
 Не вигадуй цін, акцій, термінів доставки та фактів про товар, яких тобі не дали.
 Пости пишеш для Instagram: чіпляючий перший рядок, коротко, заклик до дії, 3-6 доречних хештегів."""
@@ -35,6 +39,135 @@ async def generate_plan(days: int, note: str = "") -> list[dict]:
         '  "text": готовий підпис до поста (400-700 символів, з хештегами),\n'
         '  "photo_idea": коротко, що має бути на фото чи відео.\n'
     )
+    if note:
+        prompt += f"\nПобажання власника: {note}"
+    msg = await client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=10000,
+        system=BRAND,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return _extract_json(_text(msg))
+
+
+async def revise_post(text: str, instruction: str) -> str:
+    msg = await client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=4000,
+        system=BRAND,
+        messages=[
+            {
+                "role": "user",
+                "content": f"Ось поточний пост:\n\n{text}\n\nПравка від власника: {instruction}\n\n"
+                "Поверни ТІЛЬКИ новий текст поста, без пояснень.",
+            }
+        ],
+    )
+    return _text(msg).strip()
+
+
+async def post_from_photo(photo_jpeg: bytes, hint: str = "", existing: str = "") -> str:
+    """Пише підпис під фото (Claude дивиться на картинку). Якщо є existing, переписує пост з плану під це фото."""
+    b64 = base64.b64encode(photo_jpeg).decode()
+    if existing:
+        task = (
+            "Ось пост із контент-плану:\n\n" + existing + "\n\n"
+            "Власник надав фото, яке має до нього йти. Перепиши пост так, щоб він пасував до того, "
+            "що реально на фото. Збережи тему, тон, структуру та хештеги, прибери те, що не збігається з фото."
+        )
+    else:
+        task = "Напиши підпис для Instagram-поста до цього фото."
+    if hint:
+        task += f"\n\nДані від власника про товар (єдине джерело цін і фактів): {hint}"
+    task += (
+        "\n\nНе вигадуй цін, акцій і фактів, яких немає в даних чи на фото. "
+        "Поверни ТІЛЬКИ готовий текст поста, без пояснень."
+    )
+    msg = await client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=2000,
+        system=BRAND,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
+                    },
+                    {"type": "text", "text": task},
+                ],
+            }
+        ],
+    )
+    return _text(msg).strip()
+
+
+async def choose_format(photo_jpeg: bytes, hint: str, recent: list[str]) -> dict:
+    """Claude вирішує, чим краще публікувати це фото: звичайним постом чи Reels."""
+    b64 = base64.b64encode(photo_jpeg).decode()
+    task = (
+        "Обери формат публікації для цього фото в Instagram: \"photo\" або \"reel\".\n"
+        "Орієнтири: Reels зазвичай дають більше охоплення нових людей, тож добре для апетитних "
+        "красивих кадрів і новинок. Звичайне фото краще, коли на картинці багато тексту, цін чи умов акції, "
+        "які треба встигнути прочитати.\n"
+        f"Останні опубліковані формати (від нових до старих): {', '.join(recent) or 'ще немає'}. "
+        "Не став reel більше двох разів поспіль, чергуй для різноманіття.\n"
+        f"Дані про товар: {hint or 'немає'}\n\n"
+        'Поверни ТІЛЬКИ JSON: {"format": "photo" | "reel", "reason": "одне речення українською"}'
+    )
+    msg = await client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=300,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+                    {"type": "text", "text": task},
+                ],
+            }
+        ],
+    )
+    raw = _text(msg)
+    start, end = raw.find("{"), raw.rfind("}")
+    data = json.loads(raw[start : end + 1])
+    fmt = "reel" if data.get("format") == "reel" else "photo"
+    return {"format": fmt, "reason": str(data.get("reason", ""))}
+
+
+async def detect_country(photo_bytes: bytes, hint: str = "") -> str:
+    """Країна походження товару за фото (українською, називний відмінок) або порожній рядок, якщо не впевнений."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    img = Image.open(BytesIO(photo_bytes)).convert("RGB")
+    img.thumbnail((1024, 1024))
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    task = (
+        "З якої країни цей продукт? Дивись на упаковку, етикетку, написи, прапори, мову, тип товару. "
+        f"Назва від власника: {hint or 'немає'}.\n"
+        "Відповідай ОДНИМ словом: назва країни українською в називному відмінку (наприклад: Італія, Іспанія, Франція, Греція). "
+        "Якщо не впевнений, відповідай словом: невідомо."
+    )
+    msg = await client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=30,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+                    {"type": "text", "text": task},
+                ],
+            }
+        ],
+    )
+    country = _text(msg).strip().strip(".").split("\n")[0]
+    return "" if not country or country.lower().startswith("невід") or len(country) > 25 else country    )
     if note:
         prompt += f"\nПобажання власника: {note}"
     msg = await client.messages.create(
