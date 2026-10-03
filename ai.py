@@ -1,3 +1,4 @@
+import base64
 import json
 from anthropic import AsyncAnthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
@@ -55,6 +56,43 @@ async def revise_post(text: str, instruction: str) -> str:
                 "role": "user",
                 "content": f"Ось поточний пост:\n\n{text}\n\nПравка від власника: {instruction}\n\n"
                 "Поверни ТІЛЬКИ новий текст поста, без пояснень.",
+            }
+        ],
+    )
+    return _text(msg).strip()
+
+
+async def post_from_photo(photo_jpeg: bytes, hint: str = "", existing: str = "") -> str:
+    """Пише підпис під фото (Claude дивиться на картинку). Якщо є existing, переписує пост з плану під це фото."""
+    b64 = base64.b64encode(photo_jpeg).decode()
+    if existing:
+        task = (
+            "Ось пост із контент-плану:\n\n" + existing + "\n\n"
+            "Власник надав фото, яке має до нього йти. Перепиши пост так, щоб він пасував до того, "
+            "що реально на фото. Збережи тему, тон, структуру та хештеги, прибери те, що не збігається з фото."
+        )
+    else:
+        task = "Напиши підпис для Instagram-поста до цього фото."
+    if hint:
+        task += f"\n\nДані від власника про товар (єдине джерело цін і фактів): {hint}"
+    task += (
+        "\n\nНе вигадуй цін, акцій і фактів, яких немає в даних чи на фото. "
+        "Поверни ТІЛЬКИ готовий текст поста, без пояснень."
+    )
+    msg = await client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=2000,
+        system=BRAND,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
+                    },
+                    {"type": "text", "text": task},
+                ],
             }
         ],
     )
