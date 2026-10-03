@@ -14,3 +14,8 @@ META_APP_ID = os.getenv("META_APP_ID", "")
 META_APP_SECRET = os.getenv("META_APP_SECRET", "")
 META_USER_TOKEN = os.getenv("META_USER_TOKEN", "")  # короткий токен лише для першого підключення
 GRAPH_VERSION = os.getenv("GRAPH_VERSION", "v23.0")
+
+# Публічна адреса сервісу на Railway (для посилань на фото/відео) і режим авто-публікації
+PUBLIC_URL = os.getenv("PUBLIC_URL", "")
+PORT = int(os.getenv("PORT", "8080"))
+AUTO_PUBLISH = os.getenv("AUTO_PUBLISH", "0") == "1"
