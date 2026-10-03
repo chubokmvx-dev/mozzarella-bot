@@ -36,16 +36,19 @@ class PhotoFlow(StatesGroup):
     waiting_caption = State()
 
 
-def kb(post_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Підтвердити", callback_data=f"ok:{post_id}"),
-                InlineKeyboardButton(text="✏️ Змінити", callback_data=f"edit:{post_id}"),
-                InlineKeyboardButton(text="❌ Скасувати", callback_data=f"no:{post_id}"),
-            ]
+def kb(post_id: int, swap_targets: list[dict] | None = None) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="✅ Підтвердити", callback_data=f"ok:{post_id}"),
+            InlineKeyboardButton(text="✏️ Змінити", callback_data=f"edit:{post_id}"),
+            InlineKeyboardButton(text="❌ Скасувати", callback_data=f"no:{post_id}"),
         ]
-    )
+    ]
+    # фото можна підставити замість поста з плану: його текст перепишеться під це фото
+    for d in swap_targets or []:
+        label = f"↪️ Підставити в пост #{d['id']}" + (f" · {d['slot']}" if d["slot"] else "")
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"swap:{post_id}:{d['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def render(p: dict) -> str:
@@ -127,6 +130,31 @@ async def approve(c: CallbackQuery):
     await c.answer()
 
 
+@router.callback_query(F.data.startswith("swap:"))
+async def swap(c: CallbackQuery):
+    _, new_id, old_id = c.data.split(":")
+    new_id, old_id = int(new_id), int(old_id)
+    new, old = await db.get_post(new_id), await db.get_post(old_id)
+    image = await db.get_image(new_id)
+    if not new or not old or not image:
+        await c.answer("Не знайшов пост або фото", show_alert=True)
+        return
+    await c.message.edit_reply_markup(reply_markup=None)
+    await c.message.answer(f"Підлаштовую пост #{old_id} під фото…")
+    try:
+        text = await ai.post_from_photo(image, hint=new["text"], existing=old["text"])
+    except Exception:
+        logging.exception("swap failed")
+        await c.message.answer("Не вийшло, спробуй ще раз.")
+        await c.answer()
+        return
+    await db.set_text(old_id, text)
+    await db.set_image(old_id, image)
+    await db.set_status(new_id, "rejected")  # тимчасовий пост під фото більше не потрібен
+    await c.message.answer(render(await db.get_post(old_id)), reply_markup=kb(old_id))
+    await c.answer()
+
+
 @router.callback_query(F.data.startswith("no:"))
 async def reject(c: CallbackQuery):
     pid = int(c.data.split(":")[1])
@@ -193,6 +221,19 @@ async def _render_and_send(m: Message, bot: Bot, file_id: str, caption: str):
         await m.answer("Не вдалося обробити фото, спробуй надіслати ще раз.")
         return
     await m.answer_photo(BufferedInputFile(out, filename="post.jpg"), caption="Готово ✅")
+
+    # Claude дивиться на готову картинку й пише підпис; пост одразу іде на перевірку
+    hint = ("АКЦІЯ: " if is_promo else "") + " | ".join(p for p in parts if p)
+    await m.answer("Пишу підпис під це фото…")
+    try:
+        text = await ai.post_from_photo(out, hint)
+    except Exception:
+        logging.exception("caption failed")
+        await m.answer("Картинка готова, але підпис написати не вдалося.")
+        return
+    pid = await db.add_post_with_image("photo", text, out)
+    drafts = [d for d in await db.drafts_without_image(5) if d["id"] != pid]
+    await m.answer(render(await db.get_post(pid)), reply_markup=kb(pid, drafts))
 
 
 async def _process_image(m: Message, bot: Bot, state: FSMContext, file_id: str):
