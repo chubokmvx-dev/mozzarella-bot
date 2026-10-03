@@ -8,7 +8,7 @@ W, H = 1080, 1350  # формат 4:5, оптимальний для стріч�
 ASSETS = Path(__file__).parent / "assets"
 
 # Один параметр для розміру всіх написів і плашок: менше число = дрібніше, більше = крупніше.
-TEXT_SCALE = 0.49
+TEXT_SCALE = 0.52
 
 
 def s(n: float) -> int:
@@ -24,7 +24,7 @@ YELLOW = (255, 208, 0)
 INK = (28, 28, 28)
 
 BRAND = "mozzarella"
-DEFAULT_SUBTITLE = "Італія · пряма поставка"
+DEFAULT_SUBTITLE = "Європа · пряма поставка"
 MARGIN = 52
 
 
@@ -252,4 +252,3 @@ def make_promo_image(
         y += line_h
 
     return _save(img)
-    
