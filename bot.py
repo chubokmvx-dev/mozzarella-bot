@@ -221,6 +221,16 @@ async def swap(c: CallbackQuery):
     await db.set_text(old_id, text)
     await db.set_image(old_id, image)
     await db.set_status(new_id, "rejected")  # тимчасовий пост під фото більше не потрібен
+    if old["format"] == "reel":
+        # пост із плану заплановано як Reels: збираємо відео з підставленого фото
+        try:
+            clip = await asyncio.to_thread(video.make_reel, image)
+            await db.set_video(old_id, clip)
+            await c.message.answer_video(BufferedInputFile(clip, filename="reel.mp4"), caption="🎞 Reels")
+        except Exception:
+            logging.exception("reel failed")
+            await db.set_format(old_id, "photo")
+            await c.message.answer("Reels зробити не вдалося, пост піде звичайним фото.")
     await c.message.answer(render(await db.get_post(old_id)), reply_markup=kb(old_id, media=True))
     await c.answer()
 
