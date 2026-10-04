@@ -19,3 +19,6 @@ GRAPH_VERSION = os.getenv("GRAPH_VERSION", "v23.0")
 PUBLIC_URL = os.getenv("PUBLIC_URL", "")
 PORT = int(os.getenv("PORT", "8080"))
 AUTO_PUBLISH = os.getenv("AUTO_PUBLISH", "0") == "1"
+
+# О котрій (за Києвом) надсилати ранкове нагадування про пост на сьогодні
+REMIND_HOUR = int(os.getenv("REMIND_HOUR", "9"))

@@ -43,7 +43,8 @@ async def generate_plan(days: int, note: str = "") -> list[dict]:
         "Чергуй photo та reel, приблизно порівну.\n"
         "Поверни ТІЛЬКИ JSON-масив без пояснень. Кожен елемент має поля:\n"
         '  "format": "photo" | "reel",\n'
-        '  "slot": день тижня і година публікації, напр. "Вт 12:00",\n'
+        f'  "day": номер дня плану від 1 до {days} (один пост на день),\n'
+        '  "time": година публікації, напр. "12:00",\n'
         '  "text": готовий підпис до поста (400-700 символів, з хештегами),\n'
         '  "photo_idea": який саме продукт і який кадр сфотографувати (одне речення).\n'
     )
@@ -176,3 +177,33 @@ async def detect_country(photo_bytes: bytes, hint: str = "") -> str:
     )
     country = _text(msg).strip().strip(".").split("\n")[0]
     return "" if not country or country.lower().startswith("невід") or len(country) > 25 else country
+
+
+async def analyze_week(posts: list[dict]) -> str:
+    """Аналіз метрик опублікованих постів: що спрацювало краще й що робити далі."""
+    msg = await client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=2500,
+        system=BRAND,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "Ось дані по опублікованих постах Instagram-магазину (JSON). Поля метрик: reach охоплення, "
+                    "views перегляди, likes/comments/shares/saved реакції, total_interactions сума взаємодій, "
+                    "ig_reels_avg_watch_time середній час перегляду Reels у мілісекундах. after_24h і after_7d це "
+                    "знімки через 24 години й 7 днів, latest актуальний стан.\n\n"
+                    f"{json.dumps(posts, ensure_ascii=False)}\n\n"
+                    "Зроби короткий розбір українською для власника, без вступів:\n"
+                    "1. Який пост показав себе найкраще й чому так (за даними, а не вигадками).\n"
+                    "2. Порівняння форматів photo і reel, якщо є обидва.\n"
+                    "3. Який пост відстав.\n"
+                    "4. 2-3 конкретні поради на наступний тиждень.\n"
+                    "Якщо постів мало (менше 5), прямо скажи, що висновки попередні. "
+                    "Не вигадуй цифр, яких немає в даних, і не роби категоричних висновків із малої вибірки. "
+                    "Формат: короткі абзаци, без таблиць, без заголовків markdown, до 1500 символів."
+                ),
+            }
+        ],
+    )
+    return _text(msg).strip()

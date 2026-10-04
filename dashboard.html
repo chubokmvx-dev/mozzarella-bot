@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>mozzarella · аналітика</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --card: var(--tg-theme-secondary-bg-color, #f2f3f5);
+    --text: var(--tg-theme-text-color, #1b1b1d);
+    --muted: var(--tg-theme-hint-color, #7a7f87);
+    --accent: var(--tg-theme-button-color, #2f6b3a);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --photo: #3b82f6;
+    --reel: #f97316;
+    --track: rgba(127, 127, 127, .18);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: var(--tg-theme-bg-color, #17181a);
+      --card: var(--tg-theme-secondary-bg-color, #232427);
+      --text: var(--tg-theme-text-color, #f1f1f2);
+      --muted: var(--tg-theme-hint-color, #9a9fa8);
+      --accent: var(--tg-theme-button-color, #3f8a50);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px 16px 32px; background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+  h1 { font-size: 20px; margin: 0; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 18px; }
+  .card { background: var(--card); border-radius: 12px; padding: 12px; }
+  .card .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .card .l { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  h2 { font-size: 15px; margin: 20px 0 8px; }
+  .panel { background: var(--card); border-radius: 12px; padding: 12px; }
+  .bar-row { display: grid; grid-template-columns: 72px 1fr auto; gap: 10px; align-items: center; padding: 6px 0; }
+  .bar-label { font-size: 13px; }
+  .track { height: 12px; border-radius: 6px; background: var(--track); overflow: hidden; }
+  .fill { height: 100%; border-radius: 6px; min-width: 2px; }
+  .fill.photo { background: var(--photo); }
+  .fill.reel { background: var(--reel); }
+  .num { font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 600; min-width: 44px; text-align: right; }
+  .note { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .post { padding: 10px 0; border-top: 1px solid var(--track); }
+  .post:first-child { border-top: 0; }
+  .post-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; color: #fff; flex: none; }
+  .badge.photo { background: var(--photo); }
+  .badge.reel { background: var(--reel); }
+  .title { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .when { color: var(--muted); font-size: 12px; flex: none; }
+  .stats { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .stats b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .empty { text-align: center; color: var(--muted); padding: 36px 12px; }
+  button {
+    margin-top: 18px; width: 100%; border: 0; border-radius: 12px; padding: 12px;
+    background: var(--accent); color: var(--accent-text); font-size: 15px; font-weight: 600;
+  }
+  .err { color: #d14343; text-align: center; padding: 24px 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>mozzarella</h1>
+  <div class="sub" id="account"></div>
+</header>
+<div id="root"><div class="empty">Завантаження…</div></div>
+<button id="refresh">Оновити</button>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+const $ = (id) => document.getElementById(id);
+const fmtNum = (n) => (n == null ? "–" : Number(n).toLocaleString("uk-UA"));
+const FORMAT = { photo: "Фото", reel: "Reels" };
+
+function metricsOf(p) { return p.latest || p.m7 || p.m24 || null; }
+function interactions(m) {
+  if (!m) return null;
+  if (m.total_interactions != null) return m.total_interactions;
+  const parts = [m.likes ?? m.likes_count, m.comments ?? m.comments_count, m.shares, m.saved];
+  const got = parts.filter((x) => x != null);
+  return got.length ? got.reduce((a, b) => a + b, 0) : null;
+}
+const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+
+function whenText(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit" });
+}
+
+function render(data) {
+  $("account").textContent =
+    (data.account ? "@" + data.account : "") + (data.followers != null ? " · " + fmtNum(data.followers) + " підписників" : "");
+  const posts = data.posts.map((p) => ({ ...p, m: metricsOf(p) })).filter((p) => p.m);
+  if (!posts.length) {
+    $("root").innerHTML =
+      '<div class="empty">Метрики з\'являться після першої публікації: Instagram віддає дані не одразу, перші цифри буде видно приблизно через годину.</div>';
+    return;
+  }
+  const reaches = posts.map((p) => p.m.reach).filter((x) => x != null);
+  const inter = posts.map((p) => interactions(p.m)).filter((x) => x != null);
+
+  let html = '<div class="cards">' +
+    card(posts.length, "постів") +
+    card(fmtNum(Math.round(avg(reaches) ?? 0)), "охоплення, сер.") +
+    card(fmtNum(Math.round(avg(inter) ?? 0)), "взаємодій, сер.") +
+    "</div>";
+
+  // порівняння форматів: середнє охоплення
+  const groups = ["photo", "reel"].map((f) => {
+    const r = posts.filter((p) => p.format === f && p.m.reach != null).map((p) => p.m.reach);
+    return { f, n: r.length, v: avg(r) };
+  }).filter((g) => g.n);
+  html += "<h2>Фото чи Reels: середнє охоплення</h2><div class=\"panel\">";
+  const gmax = Math.max(...groups.map((g) => g.v), 1);
+  for (const g of groups) {
+    html += barRow(FORMAT[g.f] + " · " + g.n, g.v, gmax, g.f);
+  }
+  html += groups.length < 2
+    ? '<div class="note">Порівняння з\'явиться, коли буде опубліковано обидва формати.</div>'
+    : (Math.min(...groups.map((g) => g.n)) < 5 ? '<div class="note">Постів ще мало, висновки попередні.</div>' : "");
+  html += "</div>";
+
+  // охоплення по постах
+  const max = Math.max(...posts.map((p) => p.m.reach ?? 0), 1);
+  html += "<h2>Пости</h2><div class=\"panel\">";
+  for (const p of posts) {
+    const m = p.m;
+    const likes = m.likes ?? m.likes_count;
+    const comments = m.comments ?? m.comments_count;
+    const watch = m.ig_reels_avg_watch_time != null ? (m.ig_reels_avg_watch_time / 1000).toFixed(1) + " с" : null;
+    html += '<div class="post">' +
+      '<div class="post-head"><span class="badge ' + p.format + '">' + (FORMAT[p.format] || p.format) + "</span>" +
+      '<span class="title">' + esc(p.title || "Пост #" + p.id) + "</span>" +
+      '<span class="when">' + whenText(p.published_at) + "</span></div>" +
+      barRow("Охоплення", m.reach ?? 0, max, p.format) +
+      '<div class="stats">' +
+      stat("перегляди", m.views) + stat("лайки", likes) + stat("коментарі", comments) +
+      stat("збереження", m.saved) + stat("поширення", m.shares) + (watch ? stat("сер. перегляд", watch, true) : "") +
+      "</div></div>";
+  }
+  html += "</div>";
+  $("root").innerHTML = html;
+}
+
+function card(v, l) { return '<div class="card"><div class="v">' + v + '</div><div class="l">' + l + "</div></div>"; }
+function barRow(label, v, max, cls) {
+  const w = Math.max(2, Math.round((v / max) * 100));
+  return '<div class="bar-row"><div class="bar-label">' + esc(label) + '</div><div class="track"><div class="fill ' + cls +
+    '" style="width:' + w + '%"></div></div><div class="num">' + fmtNum(Math.round(v)) + "</div></div>";
+}
+function stat(l, v, raw) { return v == null ? "" : "<span>" + l + " <b>" + (raw ? v : fmtNum(v)) + "</b></span>"; }
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+async function load() {
+  $("root").innerHTML = '<div class="empty">Завантаження…</div>';
+  try {
+    const r = await fetch("/api/dashboard", { headers: { "X-Init-Data": tg ? tg.initData : "" } });
+    if (r.status === 403) { $("root").innerHTML = '<div class="err">Немає доступу. Відкрий дашборд з бота.</div>'; return; }
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json());
+  } catch (e) {
+    $("root").innerHTML = '<div class="err">Не вдалося завантажити дані. Спробуй оновити.</div>';
+  }
+}
+$("refresh").addEventListener("click", load);
+load();
+</script>
+</body>
+</html>

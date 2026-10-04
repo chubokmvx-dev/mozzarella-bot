@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import re
+from datetime import datetime, timedelta
 from io import BytesIO
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -11,13 +13,16 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    MenuButtonWebApp,
     Message,
+    WebAppInfo,
 )
 
 import ai
 import db
 import ig
 import media_server
+import metrics
 import photo
 import video
 from config import ADMIN_ID, AUTO_PUBLISH, BOT_TOKEN, DATABASE_URL, META_USER_TOKEN, PUBLIC_URL
@@ -75,7 +80,10 @@ async def start(m: Message):
     await m.answer(
         "Привіт! Команди:\n"
         "/plan 7 — контент-план на 7 днів\n"
-        "/plan 7 більше рецептів — з побажанням\n\n"
+        "/plan 7 більше новинок — з побажанням\n"
+        "/dashboard — дашборд з метриками\n"
+        "/report — розбір результатів від Claude\n"
+        "/ig_status — стан підключення Instagram\n\n"
         "Обробка фото: надішли фото продукту (краще як файл), потім опис:\n"
         "Назва | Ціна | Підзаголовок\n"
         "Наприклад: Моцарела буфала | 389 | Свіжа поставка\n\n"
@@ -113,6 +121,35 @@ async def ig_status(m: Message):
     await m.answer(f"Instagram: @{info['ig_username']}, сторінка «{info['page']}» ✅")
 
 
+@router.message(Command("dashboard"))
+async def dashboard(m: Message):
+    if not PUBLIC_URL:
+        await m.answer("Не задано PUBLIC_URL у Railway Variables.")
+        return
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📊 Відкрити дашборд",
+                    web_app=WebAppInfo(url=f"{PUBLIC_URL.rstrip('/')}/app"),
+                )
+            ]
+        ]
+    )
+    await m.answer("Дашборд з метриками постів:", reply_markup=markup)
+
+
+@router.message(Command("report"))
+async def report(m: Message, bot: Bot):
+    await m.answer("Збираю актуальні метрики й аналізую…")
+    try:
+        await metrics.collect_due()
+        await metrics.weekly_report(bot, force=True)
+    except Exception as e:
+        logging.exception("report failed")
+        await m.answer(f"Не вдалося зробити розбір: {e}")
+
+
 @router.message(Command("plan"))
 async def plan(m: Message, command: CommandObject):
     args = (command.args or "").split(maxsplit=1)
@@ -125,10 +162,19 @@ async def plan(m: Message, command: CommandObject):
         logging.exception("plan failed")
         await m.answer("Не вдалося скласти план, спробуй ще раз.")
         return
-    for it in items:
-        pid = await db.add_post(
-            it.get("format", "photo"), it.get("slot", ""), it["text"], it.get("photo_idea", "")
-        )
+    # перший день плану: сьогодні, якщо ще немає 12:00 за Києвом, інакше завтра
+    now = datetime.now(metrics.TZ)
+    start = now.date() if now.hour < 12 else now.date() + timedelta(days=1)
+    for idx, it in enumerate(items, start=1):
+        try:
+            day = max(1, min(int(it.get("day", idx)), days))
+        except (TypeError, ValueError):
+            day = idx
+        planned = start + timedelta(days=day - 1)
+        t = re.search(r"\d{1,2}:\d{2}", str(it.get("time", "")))
+        slot = f"{metrics.WEEKDAYS[planned.weekday()]} {planned:%d.%m}" + (f" {t.group()}" if t else "")
+        fmt = it.get("format") if it.get("format") in ("photo", "reel") else "photo"
+        pid = await db.add_post(fmt, slot, it["text"], it.get("photo_idea", ""), planned)
         await m.answer(render(await db.get_post(pid)), reply_markup=kb(pid))
 
 
@@ -399,7 +445,21 @@ async def main():
     bot = Bot(BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
-    await dp.start_polling(bot)
+    if PUBLIC_URL:
+        try:  # постійна кнопка дашборду біля поля введення
+            await bot.set_chat_menu_button(
+                chat_id=ADMIN_ID,
+                menu_button=MenuButtonWebApp(text="📊 Дашборд", web_app=WebAppInfo(url=f"{PUBLIC_URL.rstrip('/')}/app")),
+            )
+        except Exception:
+            logging.exception("menu button failed")
+    # збір метрик і нагадування працюють у фоні поруч із ботом
+    tasks = [asyncio.create_task(metrics.metrics_loop()), asyncio.create_task(metrics.schedule_loop(bot))]
+    try:
+        await dp.start_polling(bot)
+    finally:
+        for t in tasks:
+            t.cancel()
 
 
 if __name__ == "__main__":
