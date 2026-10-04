@@ -68,11 +68,11 @@ def kb(post_id: int, swap_targets: list[dict] | None = None, media: bool = False
 
 
 def render(p: dict) -> str:
-    return (
-        f"📝 Пост #{p['id']} · {p['format']} · {p['slot']}\n\n"
-        f"{p['text']}\n\n"
-        f"📷 Фото: {p['photo_idea']}"
-    )
+    head = f"📝 Пост #{p['id']} · {p['format']}" + (f" · {p['slot']}" if p["slot"] else "")
+    out = f"{head}\n\n{p['text']}"
+    if p["photo_idea"] and p["photo_idea"] != "фото додано":
+        out += f"\n\n📷 Фото: {p['photo_idea']}"
+    return out
 
 
 @router.message(Command("start"))
