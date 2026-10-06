@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from html import escape as html_escape
 from datetime import datetime, timedelta
 from io import BytesIO
 
@@ -13,8 +14,10 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     MenuButtonWebApp,
     Message,
+    ReplyKeyboardMarkup,
     WebAppInfo,
 )
 
@@ -75,10 +78,58 @@ def render(p: dict) -> str:
     return out
 
 
+BTN_CAL = "📅 Контент-план"
+MAIN_KB = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BTN_CAL)]], resize_keyboard=True)
+STATUS_ICON = {"draft": "📝", "approved": "✅", "published": "🚀"}
+FMT_ICON = {"reel": "🎬", "carousel": "🖼", "photo": "📷"}
+
+
+def _short(text: str, n: int = 45) -> str:
+    one = " ".join(text.split())
+    return one if len(one) <= n else one[: n - 1] + "…"
+
+
+def render_calendar(posts: list[dict], today) -> list[str]:
+    """Текст календаря, розбитий на повідомлення до ~3500 символів."""
+    if not posts:
+        return ["📅 У плані поки нічого немає. Команда /plan 7 складе план на тиждень."]
+    chunks, cur, last_key = [], "📅 <b>Контент-план</b>\n📝 чернетка · ✅ підтверджено · 🚀 опубліковано · 🖼 є медіа\n", object()
+    for p in posts:
+        d = p["planned_date"]
+        key = d
+        if key != last_key:
+            if d is None:
+                title = "Без дати"
+            else:
+                tag = " (сьогодні)" if d == today else " (завтра)" if (d - today).days == 1 else ""
+                title = f"{metrics.WEEKDAYS[d.weekday()]} {d:%d.%m}{tag}"
+            cur += f"\n<b>{title}</b>\n"
+            last_key = key
+        tm = re.search(r"\d{1,2}:\d{2}", p["slot"] or "")
+        media = " 🖼" if (p["has_img"] or p["has_vid"]) else ""
+        line = (f"{STATUS_ICON.get(p['status'], '•')} {tm.group() + ' ' if tm else ''}"
+                f"{FMT_ICON.get(p['format'], '📷')} #{p['id']} {html_escape(_short(p['text']))}{media}\n")
+        if len(cur) + len(line) > 3500:
+            chunks.append(cur)
+            cur = ""
+        cur += line
+    chunks.append(cur)
+    return chunks
+
+
+@router.message(Command("calendar"))
+@router.message(F.text == BTN_CAL)
+async def calendar(m: Message):
+    today = datetime.now(metrics.TZ).date()
+    for chunk in render_calendar(await db.upcoming_posts(), today):
+        await m.answer(chunk, parse_mode="HTML")
+
+
 @router.message(Command("start"))
 async def start(m: Message):
     await m.answer(
         "Привіт! Команди:\n"
+        "/calendar — що вже заплановано\n"
         "/plan 7 — контент-план на 7 днів\n"
         "/plan 7 більше новинок — з побажанням\n"
         "/dashboard — дашборд з метриками\n"
@@ -90,7 +141,8 @@ async def start(m: Message):
         "Акційне фото (з плашкою АКЦІЯ, знижкою і закресленою ціною):\n"
         "акція | Назва | Нова ціна | Стара ціна | Підзаголовок\n"
         "Наприклад: акція | Моцарела буфала | 289 | 389 | Діє до 15.10\n\n"
-        "Опис можна додати і одразу в підпис до фото."
+        "Опис можна додати і одразу в підпис до фото.",
+        reply_markup=MAIN_KB,
     )
 
 
@@ -453,6 +505,14 @@ async def main():
             )
         except Exception:
             logging.exception("menu button failed")
+    try:
+        from aiogram.types import BotCommand
+        await bot.set_my_commands([BotCommand(command="calendar", description="Що вже заплановано"),
+                                   BotCommand(command="plan", description="Контент-план на N днів"),
+                                   BotCommand(command="dashboard", description="Дашборд з метриками"),
+                                   BotCommand(command="report", description="Розбір результатів")])
+    except Exception:
+        logging.exception("set commands failed")
     # збір метрик і нагадування працюють у фоні поруч із ботом
     tasks = [asyncio.create_task(metrics.metrics_loop()), asyncio.create_task(metrics.schedule_loop(bot))]
     try:

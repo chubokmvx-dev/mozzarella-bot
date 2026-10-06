@@ -217,3 +217,17 @@ async def has_post_for_day(day) -> bool:
             day,
         )
     )
+
+
+async def upcoming_posts(back_days: int = 1) -> list[dict]:
+    """Пости для календаря: заплановані від (сьогодні - back_days), плюс підтверджені/чернетки без дати."""
+    rows = await pool.fetch(
+        "SELECT id, format, slot, text, status, planned_date, "
+        "(image IS NOT NULL) AS has_img, (video IS NOT NULL) AS has_vid "
+        "FROM posts WHERE status <> 'rejected' AND "
+        "(planned_date >= CURRENT_DATE - $1::int OR (planned_date IS NULL AND status IN ('draft','approved') "
+        "AND created_at > now() - interval '14 days')) "
+        "ORDER BY planned_date NULLS LAST, slot, id",
+        back_days,
+    )
+    return [dict(r) for r in rows]
