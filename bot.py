@@ -89,11 +89,12 @@ def _short(text: str, n: int = 45) -> str:
     return one if len(one) <= n else one[: n - 1] + "…"
 
 
-def render_calendar(posts: list[dict], today) -> list[str]:
-    """Текст календаря, розбитий на повідомлення до ~3500 символів."""
+def render_calendar(posts: list[dict], today) -> list[tuple[str, list[dict]]]:
+    """Календар, розбитий на повідомлення до ~3500 символів: [(текст, пости цього повідомлення)]."""
     if not posts:
-        return ["📅 У плані поки нічого немає. Команда /plan 7 складе план на тиждень."]
-    chunks, cur, last_key = [], "📅 <b>Контент-план</b>\n📝 чернетка · ✅ підтверджено · 🚀 опубліковано · 🖼 є медіа\n", object()
+        return [("📅 У плані поки нічого немає. Команда /plan 7 складе план на тиждень.", [])]
+    chunks, ids, cur, last_key = [], [], "", object()
+    cur = "📅 <b>Контент-план</b>\n📝 чернетка · ✅ підтверджено · 🚀 опубліковано · 🖼 є медіа\n"
     for p in posts:
         d = p["planned_date"]
         key = d
@@ -110,10 +111,11 @@ def render_calendar(posts: list[dict], today) -> list[str]:
         line = (f"{STATUS_ICON.get(p['status'], '•')} {tm.group() + ' ' if tm else ''}"
                 f"{FMT_ICON.get(p['format'], '📷')} #{p['id']} {html_escape(_short(p['text']))}{media}\n")
         if len(cur) + len(line) > 3500:
-            chunks.append(cur)
-            cur = ""
+            chunks.append((cur, ids))
+            cur, ids, last_key = "", [], object()
         cur += line
-    chunks.append(cur)
+        ids.append(p)
+    chunks.append((cur, ids))
     return chunks
 
 
@@ -121,8 +123,74 @@ def render_calendar(posts: list[dict], today) -> list[str]:
 @router.message(F.text == BTN_CAL)
 async def calendar(m: Message):
     today = datetime.now(metrics.TZ).date()
-    for chunk in render_calendar(await db.upcoming_posts(), today):
-        await m.answer(chunk, parse_mode="HTML")
+    for text, items in render_calendar(await db.upcoming_posts(), today):
+        await m.answer(text, parse_mode="HTML", reply_markup=cal_kb(items))
+
+
+def cal_kb(items: list[dict]) -> InlineKeyboardMarkup | None:
+    """Кнопка зміни дати/часу під кожним ще не опублікованим постом (без дати — з позначкою 🗓)."""
+    rows = []
+    for p in items:
+        if p["status"] == "published":
+            continue
+        mark = "🗓 Поставити дату" if p["planned_date"] is None else "✏️ Змінити"
+        rows.append([InlineKeyboardButton(text=f"{mark} · #{p['id']} {_short(p['text'], 18)}", callback_data=f"cd:{p['id']}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows[:40]) if rows else None
+
+
+@router.callback_query(F.data.startswith("cd:"))
+async def cal_pick_date(c: CallbackQuery):
+    pid = int(c.data.split(":")[1])
+    post = await db.get_post(pid)
+    if not post or post["status"] == "published":
+        await c.answer("Пост недоступний", show_alert=True)
+        return
+    today = datetime.now(metrics.TZ).date()
+    days = [today + timedelta(days=i) for i in range(0, 8)]
+    btns = [InlineKeyboardButton(
+        text=("Сьогодні" if i == 0 else "Завтра" if i == 1 else metrics.WEEKDAYS[d.weekday()]) + f" {d:%d.%m}",
+        callback_data=f"cs:{pid}:{d:%Y%m%d}") for i, d in enumerate(days)]
+    rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
+    rows.append([InlineKeyboardButton(text="🚫 Без дати", callback_data=f"cs:{pid}:none"),
+                 InlineKeyboardButton(text="✖️ Закрити", callback_data="cx")])
+    await c.message.answer(f"📅 Пост #{pid} · {html_escape(_short(post['text'], 60))}\nНа який день запланувати?",
+                           reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    await c.answer()
+
+
+@router.callback_query(F.data == "cx")
+async def cal_close(c: CallbackQuery):
+    await c.message.delete()
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("cs:"))
+async def cal_pick_time(c: CallbackQuery):
+    _, pid, day = c.data.split(":")
+    if day == "none":
+        await db.set_schedule(int(pid), None, "")
+        await c.message.edit_text(f"🚫 Пост #{pid}: дату знято.")
+        await c.answer()
+        return
+    times = ["09:00", "12:00", "15:00", "18:00", "20:00", "21:00"]
+    rows = [[InlineKeyboardButton(text=t, callback_data=f"ct:{pid}:{day}:{t.replace(':', '')}") for t in times[i:i + 3]]
+            for i in range(0, 6, 3)]
+    rows.append([InlineKeyboardButton(text="Без часу", callback_data=f"ct:{pid}:{day}:0")])
+    d = datetime.strptime(day, "%Y%m%d").date()
+    await c.message.edit_text(f"📅 Пост #{pid} · {metrics.WEEKDAYS[d.weekday()]} {d:%d.%m}\nО котрій?",
+                              reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("ct:"))
+async def cal_save(c: CallbackQuery):
+    _, pid, day, hhmm = c.data.split(":")
+    d = datetime.strptime(day, "%Y%m%d").date()
+    t = f"{hhmm[:2]}:{hhmm[2:]}" if hhmm != "0" else ""
+    slot = f"{metrics.WEEKDAYS[d.weekday()]} {d:%d.%m}" + (f" {t}" if t else "")
+    await db.set_schedule(int(pid), d, slot)
+    await c.message.edit_text(f"✅ Пост #{pid} заплановано: {slot}. Побачиш його в «{BTN_CAL}».")
+    await c.answer()
 
 
 @router.message(Command("start"))

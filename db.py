@@ -231,3 +231,8 @@ async def upcoming_posts(back_days: int = 1) -> list[dict]:
         back_days,
     )
     return [dict(r) for r in rows]
+
+
+async def set_schedule(post_id: int, planned_date, slot: str) -> None:
+    """planned_date=None знімає дату з поста."""
+    await pool.execute("UPDATE posts SET planned_date=$2, slot=$3 WHERE id=$1", post_id, planned_date, slot)
