@@ -27,6 +27,7 @@ async def init(dsn: str) -> None:
     await pool.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS ig_media_id TEXT")
     await pool.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ")
     await pool.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS planned_date DATE")
+    await pool.execute("UPDATE posts SET status='approved' WHERE status='publishing'")
     await pool.execute(
         """
         CREATE TABLE IF NOT EXISTS post_metrics (
@@ -236,3 +237,24 @@ async def upcoming_posts(back_days: int = 1) -> list[dict]:
 async def set_schedule(post_id: int, planned_date, slot: str) -> None:
     """planned_date=None знімає дату з поста."""
     await pool.execute("UPDATE posts SET planned_date=$2, slot=$3 WHERE id=$1", post_id, planned_date, slot)
+
+
+async def due_approved(day) -> list[dict]:
+    """Підтверджені пости з датою <= day, які ще не опубліковані (з медіа)."""
+    rows = await pool.fetch(
+        "SELECT id, format, slot, text, planned_date, (image IS NOT NULL) AS has_img, (video IS NOT NULL) AS has_vid "
+        "FROM posts WHERE status='approved' AND planned_date IS NOT NULL AND planned_date <= $1 "
+        "AND planned_date >= $1 - 3 ORDER BY planned_date, slot, id",
+        day,
+    )
+    return [dict(r) for r in rows]
+
+
+async def claim_publish(post_id: int) -> bool:
+    """Атомарно забирає пост у публікацію (щоб не опублікувати двічі)."""
+    r = await pool.execute("UPDATE posts SET status='publishing' WHERE id=$1 AND status='approved'", post_id)
+    return r.endswith("1")
+
+
+async def release_publish(post_id: int) -> None:
+    await pool.execute("UPDATE posts SET status='approved' WHERE id=$1 AND status='publishing'", post_id)

@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import ai
 import db
 import ig
-from config import ADMIN_ID, REMIND_HOUR
+from config import ADMIN_ID, PUBLIC_URL, REMIND_HOUR
 
 TZ = ZoneInfo("Europe/Kyiv")
 WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
@@ -120,7 +120,87 @@ async def remind(bot, day, slot: str) -> None:
     )
 
 
+# ---------------- автопублікація за планом ----------------
+
+DEFAULT_TIME = (12, 0)   # якщо дата є, а часу немає
+LATE_LIMIT = timedelta(hours=3)  # старіше — не публікуємо мовчки, питаємо власника
+
+
+def post_due_at(p: dict) -> datetime:
+    import re
+    m = re.search(r"(\d{1,2}):(\d{2})", p.get("slot") or "")
+    h, mi = (int(m.group(1)), int(m.group(2))) if m else DEFAULT_TIME
+    return datetime.combine(p["planned_date"], datetime.min.time(), tzinfo=TZ).replace(hour=h, minute=mi)
+
+
+async def publish_due(bot) -> None:
+    now = datetime.now(TZ)
+    for p in await db.due_approved(now.date()):
+        due = post_due_at(p)
+        if due > now:
+            continue
+        pid = p["id"]
+        is_reel = p["format"] == "reel" and p["has_vid"]
+        if not (p["has_img"] or is_reel):
+            key = f"nomedia:{pid}:{now.date()}"
+            if not await db.get_setting(key):
+                await db.set_setting(key, "1")
+                await bot.send_message(ADMIN_ID, f"⚠️ Пост #{pid} мав вийти {p['slot'] or p['planned_date']}, але до нього немає фото. Надішли фото — і я опублікую.")
+            continue
+        if now - due > LATE_LIMIT:
+            key = f"late:{pid}"
+            if not await db.get_setting(key):
+                await db.set_setting(key, "1")
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ Пост #{pid} не вийшов вчасно ({p['slot'] or p['planned_date']}). Опублікувати зараз чи змінити дату?",
+                    reply_markup=_late_kb(pid),
+                )
+            continue
+        await publish_post(bot, pid)
+
+
+def _late_kb(pid: int):
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🚀 Опублікувати зараз", callback_data=f"pub:{pid}"),
+        InlineKeyboardButton(text="🗓 Змінити дату", callback_data=f"cd:{pid}"),
+    ]])
+
+
+async def publish_post(bot, pid: int) -> None:
+    import media_server
+    if not PUBLIC_URL:
+        key = f"nourl:{datetime.now(TZ).date()}"
+        if not await db.get_setting(key):
+            await db.set_setting(key, "1")
+            await bot.send_message(ADMIN_ID, "⚠️ Не задано PUBLIC_URL у Railway Variables — автопублікація неможлива.")
+        return
+    if not await db.claim_publish(pid):
+        return
+    post = await db.get_post(pid)
+    is_reel = post["format"] == "reel" and bool(await db.get_video(pid))
+    url = media_server.media_url(pid, "mp4" if is_reel else "jpg")
+    try:
+        media_id = await ig.publish("reel" if is_reel else "photo", url, post["text"])
+    except Exception as e:
+        logging.exception("auto publish failed for #%s", pid)
+        await db.release_publish(pid)
+        key = f"fail:{pid}:{datetime.now(TZ):%Y%m%d%H}"
+        if not await db.get_setting(key):
+            await db.set_setting(key, "1")
+            await bot.send_message(ADMIN_ID, f"❌ Автопублікація поста #{pid} не вдалась: {e}\nСпробую ще за кілька хвилин.")
+        return
+    await db.set_published(pid, media_id)
+    link = await ig.permalink(media_id)
+    await bot.send_message(ADMIN_ID, f"🚀 Пост #{pid} опубліковано за планом. {link or ''}".strip())
+
+
 async def tick(bot) -> None:
+    try:
+        await publish_due(bot)
+    except Exception:
+        logging.exception("publish_due failed")
     now = datetime.now(TZ)
     today = now.date()
     for slot, hour in (("am", REMIND_HOUR), ("pm", 17)):
@@ -151,4 +231,4 @@ async def schedule_loop(bot) -> None:
             await tick(bot)
         except Exception:
             logging.exception("schedule tick failed")
-        await asyncio.sleep(5 * 60)
+        await asyncio.sleep(60)
