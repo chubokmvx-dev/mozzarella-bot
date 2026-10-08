@@ -193,6 +193,51 @@ async def cal_save(c: CallbackQuery):
     await c.answer()
 
 
+async def reel_clip(image: bytes) -> bytes:
+    """Reels з музикою: твій трек із /music (випадковий), інакше власна ambient-музика. Вимкнути: /music off."""
+    music = None
+    if (await db.get_setting("music_on")) != "0":
+        music = await db.random_music()
+        try:
+            return await asyncio.to_thread(video.make_reel, image, music)
+        except Exception:
+            if music is None:
+                raise
+            logging.exception("custom music failed, falling back to built-in")
+            return await asyncio.to_thread(video.make_reel, image, None)
+    return await asyncio.to_thread(video.make_reel, image, None, False)
+
+
+@router.message(Command("music"))
+async def music_cmd(m: Message):
+    arg = (m.text or "").split(maxsplit=1)[1].strip().lower() if len((m.text or "").split()) > 1 else ""
+    if arg in ("off", "on"):
+        await db.set_setting("music_on", "0" if arg == "off" else "1")
+    elif arg == "clear":
+        await db.clear_music()
+    tracks = await db.list_music()
+    on = (await db.get_setting("music_on")) != "0"
+    lst = "\n".join(f"• {t['name']}" for t in tracks) or "— своїх треків немає, використовую вбудовану ambient-музику"
+    await m.answer(
+        f"🎵 Музика в Reels: {'увімкнена' if on else 'вимкнена'}\n{lst}\n\n"
+        "Щоб додати трек, надішли мені аудіофайл (mp3/m4a) — бот буде брати випадковий.\n"
+        "/music off · /music on · /music clear (видалити мої треки)\n\n"
+        "⚠️ Бери музику без авторських прав (YouTube Audio Library, Pixabay Music), інакше Instagram може вимкнути звук."
+    )
+
+
+@router.message(F.audio | F.document.mime_type.startswith("audio/"))
+async def music_upload(m: Message, bot: Bot):
+    f = m.audio or m.document
+    if f.file_size and f.file_size > 15 * 1024 * 1024:
+        await m.answer("Файл завеликий (макс. 15 МБ).")
+        return
+    buf = await bot.download(f)
+    name = getattr(f, "title", None) or getattr(f, "file_name", None) or "трек"
+    await db.add_music(name, buf.read())
+    await m.answer(f"🎵 Трек «{name}» додано. Нові Reels будуть із музикою (/music — список).")
+
+
 @router.message(Command("start"))
 async def start(m: Message):
     await m.answer(
@@ -354,7 +399,7 @@ async def switch_format(c: CallbackQuery):
     else:
         await c.message.answer("Роблю Reels…")
         try:
-            clip = await db.get_video(pid) or await asyncio.to_thread(video.make_reel, image)
+            clip = await db.get_video(pid) or await reel_clip(image)
         except Exception:
             logging.exception("reel failed")
             await c.message.answer("Reels зробити не вдалося.")
@@ -390,7 +435,7 @@ async def swap(c: CallbackQuery):
     if old["format"] == "reel":
         # пост із плану заплановано як Reels: збираємо відео з підставленого фото
         try:
-            clip = await asyncio.to_thread(video.make_reel, image)
+            clip = await reel_clip(image)
             await db.set_video(old_id, clip)
             await c.message.answer_video(BufferedInputFile(clip, filename="reel.mp4"), caption="🎞 Reels")
         except Exception:
@@ -498,7 +543,7 @@ async def _render_and_send(m: Message, bot: Bot, file_id: str, caption: str):
     if choice["format"] == "reel":
         try:
             await m.answer("Роблю Reels…")
-            clip = await asyncio.to_thread(video.make_reel, out)
+            clip = await reel_clip(out)
             await db.set_video(pid, clip)
             await m.answer_video(
                 BufferedInputFile(clip, filename="reel.mp4"),

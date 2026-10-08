@@ -29,6 +29,10 @@ async def init(dsn: str) -> None:
     await pool.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS planned_date DATE")
     await pool.execute("UPDATE posts SET status='approved' WHERE status='publishing'")
     await pool.execute(
+        "CREATE TABLE IF NOT EXISTS music (id SERIAL PRIMARY KEY, name TEXT NOT NULL, data BYTEA NOT NULL, "
+        "created_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+    )
+    await pool.execute(
         """
         CREATE TABLE IF NOT EXISTS post_metrics (
             post_id      INT NOT NULL,
@@ -258,3 +262,19 @@ async def claim_publish(post_id: int) -> bool:
 
 async def release_publish(post_id: int) -> None:
     await pool.execute("UPDATE posts SET status='approved' WHERE id=$1 AND status='publishing'", post_id)
+
+
+async def add_music(name: str, data: bytes) -> int:
+    return await pool.fetchval("INSERT INTO music (name, data) VALUES ($1,$2) RETURNING id", name[:100], data)
+
+
+async def list_music() -> list[dict]:
+    return [dict(r) for r in await pool.fetch("SELECT id, name, length(data) AS size FROM music ORDER BY id")]
+
+
+async def random_music() -> bytes | None:
+    return await pool.fetchval("SELECT data FROM music ORDER BY random() LIMIT 1")
+
+
+async def clear_music() -> None:
+    await pool.execute("DELETE FROM music")
