@@ -123,6 +123,14 @@ def _probe(ffmpeg: str, path: Path) -> tuple[float, bool]:
     return dur, " Audio:" in r.stderr
 
 
+def _mean_db(ffmpeg: str, path: Path) -> float:
+    """Середня гучність звуку у відео (дБ); -91, якщо там тиша."""
+    import re
+    r = subprocess.run([ffmpeg, "-i", str(path), "-vn", "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True)
+    m = re.search(r"mean_volume:\s*(-?[\d.]+) dB", r.stderr)
+    return float(m.group(1)) if m else -91.0
+
+
 def first_frame(src: bytes) -> bytes:
     """Кадр з відео (на ~1 с) для обкладинки й підпису від Claude."""
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
@@ -157,16 +165,26 @@ def fit_vertical(src: bytes, overlay: Image.Image | None = None, music: bytes | 
             idx += 1
         else:
             vf += ";[vb]null[vid]"
-        if has_audio:
-            af = "[0:a]aresample=44100,aformat=channel_layouts=stereo[aud]"
-        elif music:
-            mp = Path(d) / "music.bin"
+        # музика є завжди: своя з /music або вбудована ambient; рідний звук лишається, якщо він справді є
+        mp = Path(d) / "music.bin"
+        if music:
             mp.write_bytes(music)
-            cmd += ["-stream_loop", "-1", "-i", str(mp)]
-            af = f"[{idx}:a]atrim=0:{length:.2f},asetpts=PTS-STARTPTS,afade=t=in:d=0.8,afade=t=out:st={max(length - 1.5, 0):.2f}:d=1.5,volume=0.9[aud]"
         else:
-            cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
-            af = f"[{idx}:a]atrim=0:{length:.2f}[aud]"
+            sins, sfc = _synth_args(0)
+            sp2 = Path(d) / "synth.m4a"
+            rs = subprocess.run([ffmpeg, "-y", *sins, "-filter_complex", sfc, "-map", "[aud]", "-c:a", "aac", str(sp2)],
+                                capture_output=True, timeout=120)
+            if rs.returncode != 0:
+                raise RuntimeError(rs.stderr.decode(errors="ignore")[-400:])
+            mp = sp2
+        cmd += ["-stream_loop", "-1", "-i", str(mp)]
+        mus = (f"[{idx}:a]atrim=0:{length:.2f},asetpts=PTS-STARTPTS,aresample=44100,aformat=channel_layouts=stereo,"
+               f"afade=t=in:d=0.8,afade=t=out:st={max(length - 1.5, 0):.2f}:d=1.5")
+        if has_audio and _mean_db(ffmpeg, sp) > -45:
+            # у відео є живий звук: музика тихо під ним
+            af = f"{mus},volume=0.28[m];[0:a]aresample=44100,aformat=channel_layouts=stereo[o];[o][m]amix=inputs=2:duration=first:normalize=0[aud]"
+        else:
+            af = f"{mus},volume=0.9[aud]"
         cmd += ["-filter_complex", f"{vf};{af}", "-map", "[vid]", "-map", "[aud]", "-t", f"{length:.2f}",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-b:a", "128k",
                 "-movflags", "+faststart", str(out)]
