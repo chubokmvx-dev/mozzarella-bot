@@ -410,7 +410,7 @@ async def switch_format(c: CallbackQuery):
             return
         await db.set_video(pid, clip)
         await db.set_format(pid, "reel")
-        await c.message.answer_video(BufferedInputFile(clip, filename="reel.mp4"), caption="🎞 Reels")
+        await c.message.answer_video(BufferedInputFile(clip, filename="reel.mp4"), width=1080, height=1920, supports_streaming=True, caption="🎞 Reels")
     await c.message.edit_reply_markup(reply_markup=None)
     await c.message.answer(render(await db.get_post(pid)), reply_markup=kb(pid, media=True))
 
@@ -441,7 +441,7 @@ async def swap(c: CallbackQuery):
         try:
             clip = await reel_clip(image)
             await db.set_video(old_id, clip)
-            await c.message.answer_video(BufferedInputFile(clip, filename="reel.mp4"), caption="🎞 Reels")
+            await c.message.answer_video(BufferedInputFile(clip, filename="reel.mp4"), width=1080, height=1920, supports_streaming=True, caption="🎞 Reels")
         except Exception:
             logging.exception("reel failed")
             await db.set_format(old_id, "photo")
@@ -529,7 +529,7 @@ async def _make_story(m: Message, bot: Bot, file_id: str, caption: str):
         logging.exception("story failed")
         await m.answer("Не вдалося зробити сторіс, спробуй надіслати фото ще раз.")
         return
-    await m.answer_video(BufferedInputFile(clip, filename="story.mp4"), caption=f"📲 Сторіс #{sid}\nПідпис: {text or '—'}",
+    await m.answer_video(BufferedInputFile(clip, filename="story.mp4"), width=1080, height=1920, supports_streaming=True, caption=f"📲 Сторіс #{sid}\nПідпис: {text or '—'}",
                          reply_markup=story_kb(sid))
 
 
@@ -560,7 +560,7 @@ async def story_recaption(c: CallbackQuery):
         logging.exception("story recaption failed")
         await c.message.answer("Не вийшло, спробуй ще раз.")
         return
-    await c.message.answer_video(BufferedInputFile(clip, filename="story.mp4"), caption=f"📲 Сторіс #{sid}\nПідпис: {text}",
+    await c.message.answer_video(BufferedInputFile(clip, filename="story.mp4"), width=1080, height=1920, supports_streaming=True, caption=f"📲 Сторіс #{sid}\nПідпис: {text}",
                                 reply_markup=story_kb(sid))
 
 
@@ -585,7 +585,7 @@ async def story_own_apply(m: Message, state: FSMContext):
         logging.exception("story edit failed")
         await m.answer("Не вийшло, спробуй ще раз.")
         return
-    await m.answer_video(BufferedInputFile(clip, filename="story.mp4"), caption=f"📲 Сторіс #{sid}\nПідпис: {text or '—'}",
+    await m.answer_video(BufferedInputFile(clip, filename="story.mp4"), width=1080, height=1920, supports_streaming=True, caption=f"📲 Сторіс #{sid}\nПідпис: {text or '—'}",
                          reply_markup=story_kb(sid))
 
 
@@ -650,7 +650,7 @@ async def _story_from_video(m: Message, bot: Bot, file_id: str, caption: str):
         logging.exception("video story failed")
         await m.answer("Не вдалося обробити відео. Перевір, що воно до 20 МБ (ліміт Telegram для ботів), і надішли ще раз.")
         return
-    await m.answer_video(BufferedInputFile(clip, filename="story.mp4"), caption=f"📲 Сторіс #{sid}\nПідпис: {text or '—'}",
+    await m.answer_video(BufferedInputFile(clip, filename="story.mp4"), width=1080, height=1920, supports_streaming=True, caption=f"📲 Сторіс #{sid}\nПідпис: {text or '—'}",
                          reply_markup=story_kb(sid))
 
 
@@ -673,7 +673,7 @@ async def _reel_from_video(m: Message, bot: Bot, file_id: str, caption: str):
         logging.exception("video reel failed")
         await m.answer("Не вдалося обробити відео. Перевір, що воно до 20 МБ (ліміт Telegram для ботів), і надішли ще раз.")
         return
-    await m.answer_video(BufferedInputFile(clip, filename="reel.mp4"), caption="🎞 Reels зі свого відео")
+    await m.answer_video(BufferedInputFile(clip, filename="reel.mp4"), width=1080, height=1920, supports_streaming=True, caption="🎞 Reels зі свого відео")
     await m.answer(render(await db.get_post(pid)), reply_markup=kb(pid, media=True))
 
 
@@ -796,7 +796,7 @@ async def _render_and_send(m: Message, bot: Bot, file_id: str, caption: str):
             clip = await reel_clip(out)
             await db.set_video(pid, clip)
             await m.answer_video(
-                BufferedInputFile(clip, filename="reel.mp4"),
+                BufferedInputFile(clip, filename="reel.mp4"), width=1080, height=1920, supports_streaming=True,
                 caption=f"🎞 Обрано Reels. {choice['reason']}".strip(),
             )
         except Exception:
