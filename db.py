@@ -32,6 +32,8 @@ async def init(dsn: str) -> None:
         "src BYTEA NOT NULL, video BYTEA, status TEXT NOT NULL DEFAULT 'draft', ig_media_id TEXT, "
         "created_at TIMESTAMPTZ NOT NULL DEFAULT now(), published_at TIMESTAMPTZ)"
     )
+    await pool.execute("ALTER TABLE stories ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'photo'")
+    await pool.execute("ALTER TABLE stories ADD COLUMN IF NOT EXISTS thumb BYTEA")
     await pool.execute("UPDATE posts SET status='approved' WHERE status='publishing'")
     await pool.execute(
         "CREATE TABLE IF NOT EXISTS music (id SERIAL PRIMARY KEY, name TEXT NOT NULL, data BYTEA NOT NULL, "
@@ -286,13 +288,14 @@ async def clear_music() -> None:
 
 
 # ---------- сторіс ----------
-async def add_story(title: str, caption: str, src: bytes, video: bytes) -> int:
+async def add_story(title: str, caption: str, src: bytes, video: bytes, kind: str = "photo", thumb: bytes | None = None) -> int:
     return await pool.fetchval(
-        "INSERT INTO stories (title, caption, src, video) VALUES ($1,$2,$3,$4) RETURNING id", title, caption, src, video)
+        "INSERT INTO stories (title, caption, src, video, kind, thumb) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+        title, caption, src, video, kind, thumb)
 
 
 async def get_story(sid: int) -> dict | None:
-    r = await pool.fetchrow("SELECT id, title, caption, src, status FROM stories WHERE id=$1", sid)
+    r = await pool.fetchrow("SELECT id, title, caption, src, status, kind, thumb FROM stories WHERE id=$1", sid)
     return dict(r) if r else None
 
 

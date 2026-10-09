@@ -112,3 +112,73 @@ def story_overlay(caption: str, brand: str = "mozzarella") -> Image.Image:
 
 def make_story(photo_bytes: bytes, caption: str, music: bytes | None = None, synth: bool = True) -> bytes:
     return make_reel(photo_bytes, music, synth, overlay=story_overlay(caption))
+
+
+# ---------- власні відео: у формат 9:16 ----------
+def _probe(ffmpeg: str, path: Path) -> tuple[float, bool]:
+    r = subprocess.run([ffmpeg, "-i", str(path)], capture_output=True, text=True)
+    import re
+    m = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", r.stderr)
+    dur = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else 0.0
+    return dur, " Audio:" in r.stderr
+
+
+def first_frame(src: bytes) -> bytes:
+    """Кадр з відео (на ~1 с) для обкладинки й підпису від Claude."""
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    with tempfile.TemporaryDirectory() as d:
+        sp, out = Path(d) / "in.mp4", Path(d) / "f.jpg"
+        sp.write_bytes(src)
+        dur, _ = _probe(ffmpeg, sp)
+        subprocess.run([ffmpeg, "-y", "-ss", f"{min(1.0, dur / 2):.2f}", "-i", str(sp), "-frames:v", "1", "-q:v", "2", str(out)],
+                       capture_output=True, timeout=60)
+        return out.read_bytes()
+
+
+def fit_vertical(src: bytes, overlay: Image.Image | None = None, music: bytes | None = None, max_sec: int = 60) -> bytes:
+    """Власне відео → 1080x1920 H.264/AAC: розмите тло, ролик по центру; звук лишається. Якщо звуку немає: музика або тиша."""
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    with tempfile.TemporaryDirectory() as d:
+        sp, out = Path(d) / "in.mp4", Path(d) / "out.mp4"
+        sp.write_bytes(src)
+        dur, has_audio = _probe(ffmpeg, sp)
+        if dur <= 0:
+            raise RuntimeError("Не вдалося прочитати відео")
+        length = min(dur, max_sec)
+        vf = (f"[0:v]split[a][b];[a]scale={RW}:{RH}:force_original_aspect_ratio=increase,crop={RW}:{RH},boxblur=30:3,eq=brightness=-0.12[bg];"
+              f"[b]scale={RW}:{RH}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,fps={FPS},format=yuv420p[vb]")
+        cmd = [ffmpeg, "-y", "-i", str(sp)]
+        idx = 1
+        if overlay is not None:
+            ovp = Path(d) / "overlay.png"
+            overlay.save(ovp)
+            cmd += ["-loop", "1", "-t", f"{length:.2f}", "-i", str(ovp)]
+            vf += f";[{idx}:v]format=rgba,fade=t=in:st=0.4:d=0.7:alpha=1[ov];[vb][ov]overlay=0:0:shortest=1,format=yuv420p[vid]"
+            idx += 1
+        else:
+            vf += ";[vb]null[vid]"
+        if has_audio:
+            af = "[0:a]aresample=44100,aformat=channel_layouts=stereo[aud]"
+        elif music:
+            mp = Path(d) / "music.bin"
+            mp.write_bytes(music)
+            cmd += ["-stream_loop", "-1", "-i", str(mp)]
+            af = f"[{idx}:a]atrim=0:{length:.2f},asetpts=PTS-STARTPTS,afade=t=in:d=0.8,afade=t=out:st={max(length - 1.5, 0):.2f}:d=1.5,volume=0.9[aud]"
+        else:
+            cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
+            af = f"[{idx}:a]atrim=0:{length:.2f}[aud]"
+        cmd += ["-filter_complex", f"{vf};{af}", "-map", "[vid]", "-map", "[aud]", "-t", f"{length:.2f}",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart", str(out)]
+        r = subprocess.run(cmd, capture_output=True, timeout=280)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.decode(errors="ignore")[-500:])
+        return out.read_bytes()
+
+
+def story_from_video(src: bytes, caption: str, music: bytes | None = None) -> bytes:
+    return fit_vertical(src, story_overlay(caption), music, max_sec=60)
+
+
+def reel_from_video(src: bytes, music: bytes | None = None) -> bytes:
+    return fit_vertical(src, None, music, max_sec=90)

@@ -536,7 +536,10 @@ async def _make_story(m: Message, bot: Bot, file_id: str, caption: str):
 async def _redo_story(sid: int, caption: str) -> bytes:
     st_ = await db.get_story(sid)
     music = await reel_music()
-    clip = await asyncio.to_thread(video.make_story, st_["src"], caption, music, (await db.get_setting("music_on")) != "0")
+    if st_["kind"] == "video":
+        clip = await asyncio.to_thread(video.story_from_video, st_["src"], caption, music)
+    else:
+        clip = await asyncio.to_thread(video.make_story, st_["src"], caption, music, (await db.get_setting("music_on")) != "0")
     await db.set_story(sid, caption, clip)
     return clip
 
@@ -550,7 +553,8 @@ async def story_recaption(c: CallbackQuery):
         return
     await c.answer("Придумую інший підпис…")
     try:
-        text = await ai.story_caption(st_["src"], (st_["title"] + f". Не повторюй: {st_['caption']}").strip(". "))
+        text = await ai.story_caption(st_["thumb"] if st_["kind"] == "video" else st_["src"],
+                                      (st_["title"] + f". Не повторюй: {st_['caption']}").strip(". "))
         clip = await _redo_story(sid, text)
     except Exception:
         logging.exception("story recaption failed")
@@ -615,10 +619,112 @@ async def story_publish(c: CallbackQuery):
     await c.message.answer("✅ Сторіс опубліковано! Вона буде в Instagram 24 години.")
 
 
+class VideoFlow(StatesGroup):
+    choose = State()
+
+
+async def _download_video(bot: Bot, file_id: str) -> bytes:
+    buf = BytesIO()
+    await bot.download(file_id, destination=buf)
+    return buf.getvalue()
+
+
+async def _story_from_video(m: Message, bot: Bot, file_id: str, caption: str):
+    parts = [p.strip() for p in caption.split("|")]
+    title = parts[1] if len(parts) > 1 else ""
+    own = parts[2] if len(parts) > 2 else ""
+    await m.answer("Роблю сторіс із відео…")
+    try:
+        src = await _download_video(bot, file_id)
+        thumb = await asyncio.to_thread(video.first_frame, src)
+        text = own
+        if not text:
+            try:
+                text = await ai.story_caption(thumb, title)
+            except Exception:
+                logging.exception("story caption failed")
+                text = title
+        clip = await asyncio.to_thread(video.story_from_video, src, text, await reel_music())
+        sid = await db.add_story(title, text, src, clip, "video", thumb)
+    except Exception:
+        logging.exception("video story failed")
+        await m.answer("Не вдалося обробити відео. Перевір, що воно до 20 МБ (ліміт Telegram для ботів), і надішли ще раз.")
+        return
+    await m.answer_video(BufferedInputFile(clip, filename="story.mp4"), caption=f"📲 Сторіс #{sid}\nПідпис: {text or '—'}",
+                         reply_markup=story_kb(sid))
+
+
+async def _reel_from_video(m: Message, bot: Bot, file_id: str, caption: str):
+    parts = [p.strip() for p in caption.split("|")]
+    hint = parts[1] if len(parts) > 1 else ""
+    await m.answer("Роблю Reels із відео…")
+    try:
+        src = await _download_video(bot, file_id)
+        thumb = await asyncio.to_thread(video.first_frame, src)
+        clip = await asyncio.to_thread(video.reel_from_video, src, await reel_music())
+        try:
+            text = await ai.post_from_photo(thumb, hint)
+        except Exception:
+            logging.exception("reel caption failed")
+            text = hint or "Новий ролик"
+        pid = await db.add_post_with_image("reel", text, thumb)
+        await db.set_video(pid, clip)
+    except Exception:
+        logging.exception("video reel failed")
+        await m.answer("Не вдалося обробити відео. Перевір, що воно до 20 МБ (ліміт Telegram для ботів), і надішли ще раз.")
+        return
+    await m.answer_video(BufferedInputFile(clip, filename="reel.mp4"), caption="🎞 Reels зі свого відео")
+    await m.answer(render(await db.get_post(pid)), reply_markup=kb(pid, media=True))
+
+
+async def _video_entry(m: Message, bot: Bot, state: FSMContext, file_id: str):
+    cap = (m.caption or "").strip()
+    low = cap.lower()
+    if low.startswith(STORY_WORDS):
+        await state.clear()
+        await _story_from_video(m, bot, file_id, cap)
+    elif low.startswith(("рілс", "рілз", "рилс", "reel", "reels")):
+        await state.clear()
+        await _reel_from_video(m, bot, file_id, cap)
+    else:
+        await state.set_state(VideoFlow.choose)
+        await state.update_data(file_id=file_id, cap=cap)
+        await m.answer("Що зробити з відео?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="📲 Сторіс", callback_data="vd:s"),
+            InlineKeyboardButton(text="🎞 Reels", callback_data="vd:r")]]))
+
+
+@router.message(F.video | F.video_note)
+async def on_video(m: Message, bot: Bot, state: FSMContext):
+    await _video_entry(m, bot, state, (m.video or m.video_note).file_id)
+
+
+@router.message(F.document.mime_type.startswith("video/"))
+async def on_video_file(m: Message, bot: Bot, state: FSMContext):
+    await _video_entry(m, bot, state, m.document.file_id)
+
+
+@router.callback_query(F.data.startswith("vd:"))
+async def video_choice(c: CallbackQuery, bot: Bot, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("file_id"):
+        await c.answer("Надішли відео ще раз", show_alert=True)
+        return
+    await state.clear()
+    await c.message.edit_reply_markup(reply_markup=None)
+    await c.answer()
+    cap = data.get("cap") or ""
+    if c.data.endswith(":s"):
+        await _story_from_video(c.message, bot, data["file_id"], "сторіс | " + cap if cap else "сторіс")
+    else:
+        await _reel_from_video(c.message, bot, data["file_id"], "рілс | " + cap if cap else "рілс")
+
+
 @router.message(Command("story"))
 async def story_help(m: Message):
     await m.answer("📲 Сторіс: надішли фото з підписом\nсторіс | Назва продукту\n"
                    "Назву можна пропустити (просто «сторіс»). Свій підпис: сторіс | Назва | Текст на відео.\n"
+                   "Своє відео: надішли його з підписом «сторіс» або «рілс» (без підпису запитаю, що зробити). До 20 МБ.\n"
                    "Я зроблю вертикальне відео з плашкою mozzarella і короткою підписом, без цін. Музика: /music.")
 
 
