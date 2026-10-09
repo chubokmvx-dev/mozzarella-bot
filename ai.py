@@ -208,3 +208,25 @@ async def analyze_week(posts: list[dict]) -> str:
         ],
     )
     return _text(msg).strip()
+
+
+async def story_caption(photo_jpeg: bytes, hint: str = "") -> str:
+    """Дуже короткий підпис для Stories (без цін і акцій), у тему фото."""
+    b64 = base64.b64encode(photo_jpeg).decode()
+    task = (
+        "Придумай дуже короткий підпис для Instagram Stories до цього фото: до 6 слів (до 45 символів), "
+        "живо й апетитно, українською, без цін, знижок, хештегів, лапок і емодзі. "
+        "Не вигадуй фактів, яких немає на фото чи в даних."
+    )
+    if hint:
+        task += f"\n\nПро продукт: {hint}"
+    task += "\n\nПоверни ТІЛЬКИ сам підпис."
+    msg = await client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=100,
+        system=BRAND,
+        messages=[{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+            {"type": "text", "text": task}]}],
+    )
+    return _text(msg).strip().strip('"«»').split("\n")[0][:60]

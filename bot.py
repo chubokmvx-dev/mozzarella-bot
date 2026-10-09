@@ -46,6 +46,10 @@ class PhotoFlow(StatesGroup):
     waiting_caption = State()
 
 
+class StoryEdit(StatesGroup):
+    waiting = State()
+
+
 def kb(post_id: int, swap_targets: list[dict] | None = None, media: bool = False) -> InlineKeyboardMarkup:
     rows = []
     if media:
@@ -484,7 +488,144 @@ async def apply_edit(m: Message, state: FSMContext):
     )
 
 
+STORY_WORDS = ("сторіс", "сторис", "сторі", "story", "stories")
+
+
+def story_kb(sid: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Опублікувати в Stories", callback_data=f"sp:{sid}")],
+        [InlineKeyboardButton(text="🔁 Інший підпис", callback_data=f"sc:{sid}"),
+         InlineKeyboardButton(text="✏️ Свій підпис", callback_data=f"se:{sid}")],
+        [InlineKeyboardButton(text="❌ Прибрати", callback_data=f"sd:{sid}")],
+    ])
+
+
+async def reel_music() -> bytes | None:
+    """Музика для сторіс і Reels: твій трек із /music, інакше вбудована (вимкнути: /music off)."""
+    return await db.random_music() if (await db.get_setting("music_on")) != "0" else None
+
+
+async def _make_story(m: Message, bot: Bot, file_id: str, caption: str):
+    """Фото з підписом «сторіс | Назва | свій підпис(необов'язково)» → вертикальне відео зі стрічки без цін."""
+    parts = [p.strip() for p in caption.split("|")]
+    title = parts[1] if len(parts) > 1 else ""
+    own = parts[2] if len(parts) > 2 else ""
+    await m.answer("Роблю сторіс…")
+    try:
+        buf = BytesIO()
+        await bot.download(file_id, destination=buf)
+        src = buf.getvalue()
+        text = own
+        if not text:
+            try:
+                text = await ai.story_caption(src, title)
+            except Exception:
+                logging.exception("story caption failed")
+                text = title
+        music = await reel_music()
+        clip = await asyncio.to_thread(video.make_story, src, text, music, (await db.get_setting("music_on")) != "0")
+        sid = await db.add_story(title, text, src, clip)
+    except Exception:
+        logging.exception("story failed")
+        await m.answer("Не вдалося зробити сторіс, спробуй надіслати фото ще раз.")
+        return
+    await m.answer_video(BufferedInputFile(clip, filename="story.mp4"), caption=f"📲 Сторіс #{sid}\nПідпис: {text or '—'}",
+                         reply_markup=story_kb(sid))
+
+
+async def _redo_story(sid: int, caption: str) -> bytes:
+    st_ = await db.get_story(sid)
+    music = await reel_music()
+    clip = await asyncio.to_thread(video.make_story, st_["src"], caption, music, (await db.get_setting("music_on")) != "0")
+    await db.set_story(sid, caption, clip)
+    return clip
+
+
+@router.callback_query(F.data.startswith("sc:"))
+async def story_recaption(c: CallbackQuery):
+    sid = int(c.data.split(":")[1])
+    st_ = await db.get_story(sid)
+    if not st_:
+        await c.answer("Сторіс не знайдено", show_alert=True)
+        return
+    await c.answer("Придумую інший підпис…")
+    try:
+        text = await ai.story_caption(st_["src"], (st_["title"] + f". Не повторюй: {st_['caption']}").strip(". "))
+        clip = await _redo_story(sid, text)
+    except Exception:
+        logging.exception("story recaption failed")
+        await c.message.answer("Не вийшло, спробуй ще раз.")
+        return
+    await c.message.answer_video(BufferedInputFile(clip, filename="story.mp4"), caption=f"📲 Сторіс #{sid}\nПідпис: {text}",
+                                reply_markup=story_kb(sid))
+
+
+@router.callback_query(F.data.startswith("se:"))
+async def story_own_caption(c: CallbackQuery, state: FSMContext):
+    sid = int(c.data.split(":")[1])
+    await state.set_state(StoryEdit.waiting)
+    await state.update_data(sid=sid)
+    await c.message.answer("Напиши свій короткий підпис для сторіс (до 3 рядків). «-» щоб без підпису.")
+    await c.answer()
+
+
+@router.message(StoryEdit.waiting, F.text, ~F.text.startswith("/"))
+async def story_own_apply(m: Message, state: FSMContext):
+    sid = (await state.get_data())["sid"]
+    await state.clear()
+    text = "" if m.text.strip() == "-" else m.text.strip()[:120]
+    await m.answer("Оновлюю…")
+    try:
+        clip = await _redo_story(sid, text)
+    except Exception:
+        logging.exception("story edit failed")
+        await m.answer("Не вийшло, спробуй ще раз.")
+        return
+    await m.answer_video(BufferedInputFile(clip, filename="story.mp4"), caption=f"📲 Сторіс #{sid}\nПідпис: {text or '—'}",
+                         reply_markup=story_kb(sid))
+
+
+@router.callback_query(F.data.startswith("sd:"))
+async def story_drop(c: CallbackQuery):
+    await c.message.edit_reply_markup(reply_markup=None)
+    await c.message.reply("❌ Сторіс прибрано (в Instagram нічого не йшло).")
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("sp:"))
+async def story_publish(c: CallbackQuery):
+    sid = int(c.data.split(":")[1])
+    st_ = await db.get_story(sid)
+    if not st_ or st_["status"] == "published":
+        await c.answer("Вже опубліковано або не знайдено", show_alert=True)
+        return
+    if not PUBLIC_URL:
+        await c.answer("Не задано PUBLIC_URL у Railway Variables", show_alert=True)
+        return
+    await c.message.edit_reply_markup(reply_markup=None)
+    await c.answer()
+    await c.message.answer("Публікую сторіс…")
+    try:
+        media_id = await ig.publish("story", media_server.story_url(sid), "")
+    except Exception as e:
+        logging.exception("story publish failed")
+        await c.message.answer(f"Не вдалося опублікувати сторіс: {e}", reply_markup=story_kb(sid))
+        return
+    await db.set_story_published(sid, media_id)
+    await c.message.answer("✅ Сторіс опубліковано! Вона буде в Instagram 24 години.")
+
+
+@router.message(Command("story"))
+async def story_help(m: Message):
+    await m.answer("📲 Сторіс: надішли фото з підписом\nсторіс | Назва продукту\n"
+                   "Назву можна пропустити (просто «сторіс»). Свій підпис: сторіс | Назва | Текст на відео.\n"
+                   "Я зроблю вертикальне відео з плашкою mozzarella і короткою підписом, без цін. Музика: /music.")
+
+
 async def _render_and_send(m: Message, bot: Bot, file_id: str, caption: str):
+    if caption.lower().startswith(STORY_WORDS):
+        await _make_story(m, bot, file_id, caption)
+        return
     parts = [p.strip() for p in caption.split("|")]
     is_promo = parts[0].lower() in ("акція", "акция", "акцiя")
     if is_promo:

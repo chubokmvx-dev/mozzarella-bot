@@ -97,7 +97,9 @@ async def publish(kind: str, url: str, caption: str) -> str:
     if not ig_id or not token:
         raise RuntimeError("Instagram не підключений, спершу /ig_connect")
     caption = caption[:2200]
-    if kind == "reel":
+    if kind == "story":
+        params = dict(media_type="STORIES", video_url=url)     # у Stories підпис не передається, він уже на відео
+    elif kind == "reel":
         params = dict(media_type="REELS", video_url=url, caption=caption, share_to_feed="true")
     else:
         params = dict(image_url=url, caption=caption)

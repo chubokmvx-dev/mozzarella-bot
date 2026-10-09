@@ -27,6 +27,11 @@ async def init(dsn: str) -> None:
     await pool.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS ig_media_id TEXT")
     await pool.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ")
     await pool.execute("ALTER TABLE posts ADD COLUMN IF NOT EXISTS planned_date DATE")
+    await pool.execute(
+        "CREATE TABLE IF NOT EXISTS stories (id SERIAL PRIMARY KEY, title TEXT NOT NULL DEFAULT '', caption TEXT NOT NULL DEFAULT '', "
+        "src BYTEA NOT NULL, video BYTEA, status TEXT NOT NULL DEFAULT 'draft', ig_media_id TEXT, "
+        "created_at TIMESTAMPTZ NOT NULL DEFAULT now(), published_at TIMESTAMPTZ)"
+    )
     await pool.execute("UPDATE posts SET status='approved' WHERE status='publishing'")
     await pool.execute(
         "CREATE TABLE IF NOT EXISTS music (id SERIAL PRIMARY KEY, name TEXT NOT NULL, data BYTEA NOT NULL, "
@@ -278,3 +283,26 @@ async def random_music() -> bytes | None:
 
 async def clear_music() -> None:
     await pool.execute("DELETE FROM music")
+
+
+# ---------- сторіс ----------
+async def add_story(title: str, caption: str, src: bytes, video: bytes) -> int:
+    return await pool.fetchval(
+        "INSERT INTO stories (title, caption, src, video) VALUES ($1,$2,$3,$4) RETURNING id", title, caption, src, video)
+
+
+async def get_story(sid: int) -> dict | None:
+    r = await pool.fetchrow("SELECT id, title, caption, src, status FROM stories WHERE id=$1", sid)
+    return dict(r) if r else None
+
+
+async def story_video(sid: int) -> bytes | None:
+    return await pool.fetchval("SELECT video FROM stories WHERE id=$1", sid)
+
+
+async def set_story(sid: int, caption: str, video: bytes) -> None:
+    await pool.execute("UPDATE stories SET caption=$2, video=$3 WHERE id=$1", sid, caption, video)
+
+
+async def set_story_published(sid: int, media_id: str) -> None:
+    await pool.execute("UPDATE stories SET status='published', ig_media_id=$2, published_at=now() WHERE id=$1", sid, media_id)

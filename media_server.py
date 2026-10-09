@@ -38,6 +38,20 @@ async def _serve(request: web.Request) -> web.Response:
     )
 
 
+def story_url(sid: int) -> str:
+    return f"{PUBLIC_URL.rstrip('/')}/s/{sid}/{_sig(sid, 'story')}.mp4"
+
+
+async def _serve_story(request: web.Request) -> web.Response:
+    sid = int(request.match_info["sid"])
+    if not hmac.compare_digest(request.match_info["sig"], _sig(sid, "story")):
+        raise web.HTTPNotFound()
+    data = await db.story_video(sid)
+    if not data:
+        raise web.HTTPNotFound()
+    return web.Response(body=data, content_type="video/mp4")
+
+
 def validate_init_data(init_data: str) -> dict | None:
     """Перевіряє підпис Telegram Mini App (initData). Повертає дані користувача або None."""
     pairs = dict(parse_qsl(init_data, keep_blank_values=True))
@@ -111,6 +125,7 @@ async def start() -> None:
             web.get("/app", _app),
             web.get("/api/dashboard", _api_dashboard),
             web.get(r"/m/{pid:\d+}/{sig:[0-9a-f]+}.{kind:jpg|mp4}", _serve),
+            web.get(r"/s/{sid:\d+}/{sig:[0-9a-f]+}.mp4", _serve_story),
         ]
     )
     runner = web.AppRunner(app)
