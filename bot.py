@@ -515,8 +515,8 @@ async def _make_story(m: Message, bot: Bot, file_id: str, caption: str):
         buf = BytesIO()
         await bot.download(file_id, destination=buf)
         src = buf.getvalue()
-        text = own
-        if not text:
+        text = "" if own in ("-", "без", "—") else own
+        if not text and own not in ("-", "без", "—"):
             try:
                 text = await ai.story_caption(src, title)
             except Exception:
@@ -637,8 +637,8 @@ async def _story_from_video(m: Message, bot: Bot, file_id: str, caption: str):
     try:
         src = await _download_video(bot, file_id)
         thumb = await asyncio.to_thread(video.first_frame, src)
-        text = own
-        if not text:
+        text = "" if own in ("-", "без", "—") else own
+        if not text and own not in ("-", "без", "—"):
             try:
                 text = await ai.story_caption(thumb, title)
             except Exception:
@@ -691,7 +691,8 @@ async def _video_entry(m: Message, bot: Bot, state: FSMContext, file_id: str):
         await state.update_data(file_id=file_id, cap=cap)
         await m.answer("Що зробити з відео?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="📲 Сторіс", callback_data="vd:s"),
-            InlineKeyboardButton(text="🎞 Reels", callback_data="vd:r")]]))
+            InlineKeyboardButton(text="🎞 Reels", callback_data="vd:r")],
+            [InlineKeyboardButton(text="📲 Сторіс без підпису", callback_data="vd:n")]]))
 
 
 @router.message(F.video | F.video_note)
@@ -714,7 +715,9 @@ async def video_choice(c: CallbackQuery, bot: Bot, state: FSMContext):
     await c.message.edit_reply_markup(reply_markup=None)
     await c.answer()
     cap = data.get("cap") or ""
-    if c.data.endswith(":s"):
+    if c.data.endswith(":n"):
+        await _story_from_video(c.message, bot, data["file_id"], "сторіс | | -")
+    elif c.data.endswith(":s"):
         await _story_from_video(c.message, bot, data["file_id"], "сторіс | " + cap if cap else "сторіс")
     else:
         await _reel_from_video(c.message, bot, data["file_id"], "рілс | " + cap if cap else "рілс")
@@ -724,7 +727,7 @@ async def video_choice(c: CallbackQuery, bot: Bot, state: FSMContext):
 async def story_help(m: Message):
     await m.answer("📲 Сторіс: надішли фото з підписом\nсторіс | Назва продукту\n"
                    "Назву можна пропустити (просто «сторіс»). Свій підпис: сторіс | Назва | Текст на відео.\n"
-                   "Своє відео: надішли його з підписом «сторіс» або «рілс» (без підпису запитаю, що зробити). До 20 МБ.\n"
+                   "Своє відео: надішли його з підписом «сторіс» або «рілс» (без підпису запитаю, що зробити). Без тексту на відео: «сторіс | | -». До 20 МБ.\n"
                    "Я зроблю вертикальне відео з плашкою mozzarella і короткою підписом, без цін. Музика: /music.")
 
 
