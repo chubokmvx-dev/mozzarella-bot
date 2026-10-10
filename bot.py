@@ -21,6 +21,7 @@ from aiogram.types import (
     WebAppInfo,
 )
 
+import ads
 import ai
 import db
 import ig
@@ -279,6 +280,12 @@ async def ig_connect(m: Message):
         f"✅ Підключено: Instagram @{info['ig_username']} (сторінка «{info['page']}»).\n"
         "Тепер можна видалити META_USER_TOKEN з Railway Variables, він більше не потрібен."
     )
+
+
+@router.message(Command("ads_check"))
+async def ads_check(m: Message):
+    await m.answer("Перевіряю доступ до рекламного кабінету…")
+    await m.answer(await ads.check())
 
 
 @router.message(Command("ig_status"))
